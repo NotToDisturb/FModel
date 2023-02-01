@@ -11,8 +11,8 @@ using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse.UE4.Assets.Exports.Material;
 using CUE4Parse.UE4.Assets.Exports.SkeletalMesh;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
+using CUE4Parse.UE4.Objects.Core.Math;
 using FModel.Extensions;
-using FModel.Services;
 using FModel.Settings;
 using FModel.Views.Snooper.Buffers;
 using FModel.Views.Snooper.Models.Animations;
@@ -24,6 +24,7 @@ namespace FModel.Views.Snooper.Models;
 public class Model : IDisposable
 {
     private int _handle;
+    private const int _LOD_INDEX = 0;
 
     private BufferObject<uint> _ebo;
     private BufferObject<float> _vbo;
@@ -32,31 +33,44 @@ public class Model : IDisposable
     private VertexArrayObject<float, uint> _vao;
 
     private readonly UObject _export;
-    private readonly int _vertexSize = 13; // VertexIndex + Position + Normal + Tangent + UV + TextureLayer
+    protected readonly int VertexSize = 13; // VertexIndex + Position + Normal + Tangent + UV + TextureLayer
     private const int _faceSize = 3;
 
     public readonly string Path;
     public readonly string Name;
     public readonly string Type;
     public readonly bool HasVertexColors;
-    public readonly bool HasMorphTargets;
     public readonly int UvCount;
+    public readonly FBox Box;
     public uint[] Indices;
     public float[] Vertices;
     public Section[] Sections;
     public Material[] Materials;
+    public bool TwoSided;
 
     public bool HasSkeleton => Skeleton is { IsLoaded: true };
     public readonly Skeleton Skeleton;
 
+    public bool HasSockets => Sockets.Length > 0;
+    public readonly Socket[] Sockets;
+
+    public bool HasMorphTargets => Morphs.Length > 0;
+    public readonly Morph[] Morphs;
+
+    private string _attachedTo = string.Empty;
+    private readonly List<string> _attachedFor = new ();
+    public bool IsAttached => _attachedTo.Length > 0;
+    public bool IsAttachment => _attachedFor.Count > 0;
+    public string AttachIcon => IsAttachment ? "link_has" : IsAttached ? "link_on" : "link_off";
+    public string AttachTooltip => IsAttachment ? $"Is Attachment For:\n{string.Join("\n", _attachedFor)}" : IsAttached ? $"Is Attached To {_attachedTo}" : "Not Attached To Any Socket Nor Attachment For Any Model";
+
     public int TransformsCount;
     public readonly List<Transform> Transforms;
-
-    public readonly Morph[] Morphs;
+    private Matrix4x4 _previousMatrix;
 
     public bool Show;
     public bool Wireframe;
-    public bool IsSetup;
+    public bool IsSetup { get; private set; }
     public bool IsSelected;
     public int SelectedInstance;
     public float MorphTime;
@@ -68,36 +82,66 @@ public class Model : IDisposable
         Name = Path.SubstringAfterLast('/').SubstringBefore('.');
         Type = export.ExportType;
         UvCount = 1;
+        Box = new FBox(new FVector(-2f), new FVector(2f));
+        Sockets = Array.Empty<Socket>();
+        Morphs = Array.Empty<Morph>();
         Transforms = new List<Transform>();
     }
 
     public Model(UStaticMesh export, CStaticMesh staticMesh) : this(export, staticMesh, Transform.Identity) {}
-    public Model(UStaticMesh export, CStaticMesh staticMesh, Transform transform) : this(export, export.Materials, null, staticMesh.LODs.Count, staticMesh.LODs[0], staticMesh.LODs[0].Verts, transform) {}
-    private Model(USkeletalMesh export, CSkeletalMesh skeletalMesh, Transform transform) : this(export, export.Materials, export.Skeleton, skeletalMesh.LODs.Count, skeletalMesh.LODs[0], skeletalMesh.LODs[0].Verts, transform) {}
-    public Model(USkeletalMesh export, CSkeletalMesh skeletalMesh) : this(export, skeletalMesh, Transform.Identity)
+    public Model(UStaticMesh export, CStaticMesh staticMesh, Transform transform) : this(export, export.Materials, staticMesh.LODs, transform)
     {
-        var morphTargets = export.MorphTargets;
-        if (morphTargets is not { Length: > 0 })
-            return;
+        Box = staticMesh.BoundingBox * Constants.SCALE_DOWN_RATIO;
 
-        var length = morphTargets.Length;
-
-        HasMorphTargets = true;
-        Morphs = new Morph[length];
-        for (var i = 0; i < Morphs.Length; i++)
+        Sockets = new Socket[export.Sockets.Length];
+        for (int i = 0; i < Sockets.Length; i++)
         {
-            Morphs[i] = new Morph(Vertices, _vertexSize, morphTargets[i].Load<UMorphTarget>());
-            ApplicationService.ApplicationView.Status.UpdateStatusLabel($"{Morphs[i].Name} ... {i}/{length}");
+            if (export.Sockets[i].Load<UStaticMeshSocket>() is not { } socket) continue;
+            Sockets[i] = new Socket(socket, Transforms[0]);
         }
-        ApplicationService.ApplicationView.Status.UpdateStatusLabel("");
     }
 
-    private Model(UObject export, ResolvedObject[] materials, FPackageIndex skeleton, int numLods, CBaseMeshLod lod, CMeshVertex[] vertices, Transform transform = null) : this(export)
+    public Model(USkeletalMesh export, CSkeletalMesh skeletalMesh) : this(export, skeletalMesh, Transform.Identity) {}
+    private Model(USkeletalMesh export, CSkeletalMesh skeletalMesh, Transform transform) : this(export, export.Materials, skeletalMesh.LODs, transform)
+    {
+        var t = Transforms[0];
+        Box = skeletalMesh.BoundingBox * Constants.SCALE_DOWN_RATIO;
+        Skeleton = new Skeleton(export.Skeleton, export.ReferenceSkeleton, t);
+
+        var sockets = new List<FPackageIndex>();
+        sockets.AddRange(export.Sockets);
+        if (HasSkeleton) sockets.AddRange(Skeleton.UnrealSkeleton.Sockets);
+
+        Sockets = new Socket[sockets.Count];
+        for (int i = 0; i < Sockets.Length; i++)
+        {
+            if (sockets[i].Load<USkeletalMeshSocket>() is not { } socket) continue;
+
+            if (!Skeleton.BonesIndexByName.TryGetValue(socket.BoneName.Text, out var boneIndex) ||
+                !Skeleton.BonesTransformByIndex.TryGetValue(boneIndex, out var boneTransform))
+                boneTransform = t;
+
+            Sockets[i] = new Socket(socket, boneTransform);
+        }
+
+        Morphs = new Morph[export.MorphTargets.Length];
+        for (var i = 0; i < Morphs.Length; i++)
+        {
+            Morphs[i] = new Morph(Vertices, VertexSize, export.MorphTargets[i].Load<UMorphTarget>());
+        }
+    }
+
+    private Model(UObject export, IReadOnlyList<ResolvedObject> materials, IReadOnlyList<CStaticMeshLod> lods, Transform transform = null)
+        : this(export, materials, lods[_LOD_INDEX], lods[_LOD_INDEX].Verts, lods.Count, transform) {}
+    private Model(UObject export, IReadOnlyList<ResolvedObject> materials, IReadOnlyList<CSkelMeshLod> lods, Transform transform = null)
+        : this(export, materials, lods[_LOD_INDEX], lods[_LOD_INDEX].Verts, lods.Count, transform) {}
+    private Model(UObject export, IReadOnlyList<ResolvedObject> materials, CBaseMeshLod lod, IReadOnlyList<CMeshVertex> vertices, int numLods, Transform transform = null) : this(export)
     {
         var hasCustomUvs = lod.ExtraUV.IsValueCreated;
         UvCount = hasCustomUvs ? Math.Max(lod.NumTexCoords, numLods) : lod.NumTexCoords;
+        TwoSided = lod.IsTwoSided;
 
-        Materials = new Material[materials.Length];
+        Materials = new Material[materials.Count];
         for (int m = 0; m < Materials.Length; m++)
         {
             if ((materials[m]?.TryLoad(out var material) ?? false) && material is UMaterialInterface unrealMaterial)
@@ -107,13 +151,12 @@ public class Model : IDisposable
         if (lod.VertexColors is { Length: > 0})
         {
             HasVertexColors = true;
-            _vertexSize += 4; // + Color
+            VertexSize += 4; // + Color
         }
 
-        if (skeleton != null)
+        if (vertices is CSkelMeshVertex[])
         {
-            Skeleton = new Skeleton(skeleton);
-            _vertexSize += 8; // + BoneIds + BoneWeights
+            VertexSize += 8; // + BoneIds + BoneWeights
         }
 
         Indices = new uint[lod.Indices.Value.Length];
@@ -122,11 +165,11 @@ public class Model : IDisposable
             Indices[i] = (uint) lod.Indices.Value[i];
         }
 
-        Vertices = new float[lod.NumVerts * _vertexSize];
-        for (int i = 0; i < vertices.Length; i++)
+        Vertices = new float[lod.NumVerts * VertexSize];
+        for (int i = 0; i < vertices.Count; i++)
         {
             var count = 0;
-            var baseIndex = i * _vertexSize;
+            var baseIndex = i * VertexSize;
             var vert = vertices[i];
             Vertices[baseIndex + count++] = i;
             Vertices[baseIndex + count++] = vert.Position.X * Constants.SCALE_DOWN_RATIO;
@@ -151,9 +194,8 @@ public class Model : IDisposable
                 Vertices[baseIndex + count++] = color.A;
             }
 
-            if (HasSkeleton)
+            if (vert is CSkelMeshVertex skelVert)
             {
-                var skelVert = (CSkelMeshVertex) vert;
                 var weightsHash = skelVert.UnpackWeights();
                 Vertices[baseIndex + count++] = skelVert.Bone[0];
                 Vertices[baseIndex + count++] = skelVert.Bone[1];
@@ -170,10 +212,13 @@ public class Model : IDisposable
         for (var s = 0; s < Sections.Length; s++)
         {
             var section = lod.Sections.Value[s];
-            Sections[s] = new Section(section.MaterialIndex, section.NumFaces * _faceSize, section.FirstIndex, Materials[section.MaterialIndex]);
+            Sections[s] = new Section(section.MaterialIndex, section.NumFaces * _faceSize, section.FirstIndex);
+            if (section.IsValid) Sections[s].SetupMaterial(Materials[section.MaterialIndex]);
         }
 
-        AddInstance(transform ?? Transform.Identity);
+        var t = transform ?? Transform.Identity;
+        _previousMatrix = t.Matrix;
+        AddInstance(t);
     }
 
     public void AddInstance(Transform transform)
@@ -182,11 +227,42 @@ public class Model : IDisposable
         Transforms.Add(transform);
     }
 
-    public void UpdateMatrix(int instance)
+    public void UpdateMatrices(Options options)
     {
+        UpdateMatrices();
+        foreach (var socket in Sockets)
+        {
+            foreach (var attached in socket.AttachedModels)
+            {
+                if (!options.TryGetModel(attached, out var attachedModel))
+                    continue;
+
+                attachedModel.Transforms[attachedModel.SelectedInstance].Relation = socket.Transform.Matrix;
+                attachedModel.UpdateMatrices();
+            }
+        }
+    }
+    private void UpdateMatrices()
+    {
+        var matrix = Transforms[SelectedInstance].Matrix;
+        if (matrix == _previousMatrix) return;
+
         _matrixVbo.Bind();
-        _matrixVbo.Update(instance, Transforms[instance].Matrix);
+        _matrixVbo.Update(SelectedInstance, matrix);
         _matrixVbo.Unbind();
+
+        if (HasSkeleton) Skeleton.UpdateBoneMatrices(matrix);
+        foreach (var socket in Sockets)
+        {
+            if (!HasSkeleton ||
+                !Skeleton.BonesIndexByName.TryGetValue(socket.BoneName.Text, out var boneIndex) ||
+                !Skeleton.BonesTransformByIndex.TryGetValue(boneIndex, out var boneTransform))
+                boneTransform = Transforms[SelectedInstance];
+
+            socket.UpdateSocketMatrix(boneTransform.Matrix);
+        }
+
+        _previousMatrix = matrix;
     }
 
     public void UpdateMorph(int index)
@@ -194,6 +270,23 @@ public class Model : IDisposable
         _morphVbo.Bind();
         _morphVbo.Update(Morphs[index].Vertices);
         _morphVbo.Unbind();
+    }
+
+    public void AttachModel(Model attachedTo, Socket socket)
+    {
+        _attachedTo = $"'{socket.Name}' from '{attachedTo.Name}'{(!socket.BoneName.IsNone ? $" at '{socket.BoneName}'" : "")}";
+        attachedTo._attachedFor.Add($"'{Name}'");
+        // reset PRS to 0 so it's attached to the actual position (can be transformed relative to the socket later by the user)
+        Transforms[SelectedInstance].Position = FVector.ZeroVector;
+        Transforms[SelectedInstance].Rotation = FQuat.Identity;
+        Transforms[SelectedInstance].Scale = FVector.OneVector;
+    }
+
+    public void DetachModel(Model attachedTo)
+    {
+        _attachedTo = string.Empty;
+        attachedTo._attachedFor.Remove($"'{Name}'");
+        Transforms[SelectedInstance].Relation = _previousMatrix;
     }
 
     public void SetupInstances()
@@ -208,21 +301,21 @@ public class Model : IDisposable
     public void Setup(Options options)
     {
         _handle = GL.CreateProgram();
-        var broken = GL.GetInteger(GetPName.MaxTextureUnits) == 0;
+        var broken = GL.GetInteger(GetPName.MaxTextureCoords) == 0;
 
         _ebo = new BufferObject<uint>(Indices, BufferTarget.ElementArrayBuffer);
         _vbo = new BufferObject<float>(Vertices, BufferTarget.ArrayBuffer);
         _vao = new VertexArrayObject<float, uint>(_vbo, _ebo);
 
-        _vao.VertexAttributePointer(0, 1, VertexAttribPointerType.Int, _vertexSize, 0); // vertex index
-        _vao.VertexAttributePointer(1, 3, VertexAttribPointerType.Float, _vertexSize, 1); // position
-        _vao.VertexAttributePointer(2, 3, VertexAttribPointerType.Float, _vertexSize, 4); // normal
-        _vao.VertexAttributePointer(3, 3, VertexAttribPointerType.Float, _vertexSize, 7); // tangent
-        _vao.VertexAttributePointer(4, 2, VertexAttribPointerType.Float, _vertexSize, 10); // uv
-        if (!broken) _vao.VertexAttributePointer(5, 1, VertexAttribPointerType.Float, _vertexSize, 12); // texture index
-        _vao.VertexAttributePointer(6, 4, VertexAttribPointerType.Float, _vertexSize, 13); // color
-        _vao.VertexAttributePointer(7, 4, VertexAttribPointerType.Float, _vertexSize, 17); // boneids
-        _vao.VertexAttributePointer(8, 4, VertexAttribPointerType.Float, _vertexSize, 21); // boneweights
+        _vao.VertexAttributePointer(0, 1, VertexAttribPointerType.Int, VertexSize, 0); // vertex index
+        _vao.VertexAttributePointer(1, 3, VertexAttribPointerType.Float, VertexSize, 1); // position
+        _vao.VertexAttributePointer(2, 3, VertexAttribPointerType.Float, VertexSize, 4); // normal
+        _vao.VertexAttributePointer(3, 3, VertexAttribPointerType.Float, VertexSize, 7); // tangent
+        _vao.VertexAttributePointer(4, 2, VertexAttribPointerType.Float, VertexSize, 10); // uv
+        if (!broken) _vao.VertexAttributePointer(5, 1, VertexAttribPointerType.Float, VertexSize, 12); // texture index
+        _vao.VertexAttributePointer(6, 4, VertexAttribPointerType.Float, VertexSize, 13); // color
+        _vao.VertexAttributePointer(7, 4, VertexAttribPointerType.Float, VertexSize, 17); // boneids
+        _vao.VertexAttributePointer(8, 4, VertexAttribPointerType.Float, VertexSize, 21); // boneweights
 
         SetupInstances(); // instanced models transform
 
@@ -242,37 +335,42 @@ public class Model : IDisposable
                     _morphVbo = new BufferObject<float>(Morphs[morph].Vertices, BufferTarget.ArrayBuffer);
             }
             _vao.Bind();
-            _vao.VertexAttributePointer(13, 3, VertexAttribPointerType.Float, 3, 0); // morph position
+            _vao.VertexAttributePointer(13, 3, VertexAttribPointerType.Float, Morph.VertexSize, 0); // morph position
+            _vao.VertexAttributePointer(14, 3, VertexAttribPointerType.Float, Morph.VertexSize, 0); // morph tangent
             _vao.Unbind();
         }
 
         for (int section = 0; section < Sections.Length; section++)
         {
             if (!Show) Show = Sections[section].Show;
-            Sections[section].Setup();
         }
 
         IsSetup = true;
     }
 
-    public void Render(Shader shader)
+    public void Render(Shader shader, bool outline = false)
     {
+        if (outline) GL.Disable(EnableCap.DepthTest);
+        if (TwoSided) GL.Disable(EnableCap.CullFace);
         if (IsSelected)
         {
             GL.Enable(EnableCap.StencilTest);
-            GL.StencilFunc(StencilFunction.Always, 1, 0xFF);
+            GL.StencilFunc(outline ? StencilFunction.Notequal : StencilFunction.Always, 1, 0xFF);
         }
 
         _vao.Bind();
         shader.SetUniform("uMorphTime", MorphTime);
-        shader.SetUniform("uUvCount", UvCount);
-        shader.SetUniform("uHasVertexColors", HasVertexColors);
+        if (!outline)
+        {
+            shader.SetUniform("uUvCount", UvCount);
+            shader.SetUniform("uHasVertexColors", HasVertexColors);
+        }
 
         GL.PolygonMode(MaterialFace.FrontAndBack, Wireframe ? PolygonMode.Line : PolygonMode.Fill);
         foreach (var section in Sections)
         {
             if (!section.Show) continue;
-            Materials[section.MaterialIndex].Render(shader);
+            if (!outline) Materials[section.MaterialIndex].Render(shader);
             GL.DrawElementsInstanced(PrimitiveType.Triangles, section.FacesCount, DrawElementsType.UnsignedInt, section.FirstFaceIndexPtr, TransformsCount);
         }
         _vao.Unbind();
@@ -282,10 +380,14 @@ public class Model : IDisposable
             GL.StencilFunc(StencilFunction.Always, 0, 0xFF);
             GL.Disable(EnableCap.StencilTest);
         }
+        if (TwoSided) GL.Enable(EnableCap.CullFace);
+        if (outline) GL.Enable(EnableCap.DepthTest);
     }
 
-    public void SimpleRender(Shader shader)
+    public void PickingRender(Shader shader)
     {
+        if (TwoSided) GL.Disable(EnableCap.CullFace);
+
         _vao.Bind();
         shader.SetUniform("uMorphTime", MorphTime);
         foreach (var section in Sections)
@@ -294,28 +396,8 @@ public class Model : IDisposable
             GL.DrawElementsInstanced(PrimitiveType.Triangles, section.FacesCount, DrawElementsType.UnsignedInt, section.FirstFaceIndexPtr, TransformsCount);
         }
         _vao.Unbind();
-    }
 
-    public void Outline(Shader shader)
-    {
-        GL.Enable(EnableCap.StencilTest);
-        GL.Disable(EnableCap.DepthTest);
-        GL.StencilFunc(StencilFunction.Notequal, 1, 0xFF);
-
-        _vao.Bind();
-        shader.SetUniform("uMorphTime", MorphTime);
-
-        GL.PolygonMode(MaterialFace.FrontAndBack, Wireframe ? PolygonMode.Line : PolygonMode.Fill);
-        foreach (var section in Sections)
-        {
-            if (!section.Show) continue;
-            GL.DrawElementsInstancedBaseInstance(PrimitiveType.Triangles, section.FacesCount, DrawElementsType.UnsignedInt, section.FirstFaceIndexPtr, TransformsCount, SelectedInstance);
-        }
-        _vao.Unbind();
-
-        GL.StencilFunc(StencilFunction.Always, 0, 0xFF);
-        GL.Enable(EnableCap.DepthTest);
-        GL.Disable(EnableCap.StencilTest);
+        if (TwoSided) GL.Enable(EnableCap.CullFace);
     }
 
     public bool TrySave(out string label, out string savedFilePath)
@@ -340,18 +422,15 @@ public class Model : IDisposable
         _vbo.Dispose();
         _matrixVbo.Dispose();
         _vao.Dispose();
-        if (HasMorphTargets)
+        Skeleton?.Dispose();
+        for (int socket = 0; socket < Sockets.Length; socket++)
         {
-            _morphVbo.Dispose();
-            for (var morph = 0; morph < Morphs.Length; morph++)
-            {
-                Morphs[morph].Dispose();
-            }
+            Sockets[socket]?.Dispose();
         }
-
-        for (int section = 0; section < Sections.Length; section++)
+        if (HasMorphTargets) _morphVbo.Dispose();
+        for (var morph = 0; morph < Morphs.Length; morph++)
         {
-            Sections[section].Dispose();
+            Morphs[morph]?.Dispose();
         }
 
         GL.DeleteProgram(_handle);

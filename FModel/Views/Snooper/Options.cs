@@ -36,6 +36,9 @@ public class Options
             ["noimage"] = new ("T_Placeholder_Item_Image"),
             ["pointlight"] = new ("pointlight"),
             ["spotlight"] = new ("spotlight"),
+            ["link_on"] = new ("link_on"),
+            ["link_off"] = new ("link_off"),
+            ["link_has"] = new ("link_has"),
         };
 
         _platform = UserSettings.Default.OverridedPlatform;

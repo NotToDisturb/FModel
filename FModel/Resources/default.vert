@@ -1,4 +1,4 @@
-﻿#version 460 core
+#version 460 core
 
 layout (location = 1) in vec3 vPos;
 layout (location = 2) in vec3 vNormal;
@@ -9,10 +9,10 @@ layout (location = 6) in vec4 vColor;
 layout (location = 7) in vec4 vBoneIds;
 layout (location = 8) in vec4 vBoneWeights;
 layout (location = 9) in mat4 vInstanceMatrix;
-layout (location = 13) in vec3 vMorphTarget;
+layout (location = 13) in vec3 vMorphTargetPos;
+layout (location = 14) in vec3 vMorphTargetTangent;
 
-//const int MAX_BONES = 0;
-//const int MAX_BONE_INFLUENCE = 0;
+//const int MAX_BONES = 140;
 
 uniform mat4 uView;
 uniform mat4 uProjection;
@@ -28,24 +28,29 @@ out vec4 fColor;
 
 void main()
 {
-    vec4 pos = vec4(mix(vPos, vMorphTarget, uMorphTime), 1.0);
-//    for(int i = 0 ; i < MAX_BONE_INFLUENCE; i++)
+    vec4 bindPos = vec4(mix(vPos, vMorphTargetPos, uMorphTime), 1.0);
+    vec4 bindNormal = vec4(vNormal, 1.0);
+    vec4 bindTangent = vec4(mix(vTangent, vMorphTargetTangent, uMorphTime), 1.0);
+
+//    vec4 finalPos = vec4(0.0);
+//    vec4 finalNormal = vec4(0.0);
+//    vec4 finalTangent = vec4(0.0);
+//    vec4 weights = normalize(vBoneWeights);
+//    for(int i = 0 ; i < 4; i++)
 //    {
-//        if(vBoneIds[i] == -1) continue;
-//        if(vBoneIds[i] >= MAX_BONES)
-//        {
-//            break;
-//        }
+//        int boneIndex = int(vBoneIds[i]);
+//        if(boneIndex < 0) break;
 //
-//        vec4 localPos = uFinalBonesMatrix[int(vBoneIds[i])] * pos;
-//        pos += localPos * vBoneWeights[i];
+//        finalPos += uFinalBonesMatrix[boneIndex] * bindPos * weights[i];
+//        finalNormal += uFinalBonesMatrix[boneIndex] * bindNormal * weights[i];
+//        finalTangent += uFinalBonesMatrix[boneIndex] * bindTangent * weights[i];
 //    }
 
-    gl_Position = uProjection * uView * vInstanceMatrix * pos;
+    gl_Position = uProjection * uView * vInstanceMatrix * bindPos;
 
-    fPos = vec3(vInstanceMatrix * pos);
-    fNormal = mat3(transpose(inverse(vInstanceMatrix))) * vNormal;
-    fTangent = mat3(transpose(inverse(vInstanceMatrix))) * vTangent;
+    fPos = vec3(vInstanceMatrix * bindPos);
+    fNormal = vec3(transpose(inverse(vInstanceMatrix)) * bindNormal);
+    fTangent = vec3(transpose(inverse(vInstanceMatrix)) * bindTangent);
     fTexCoords = vTexCoords;
     fTexLayer = vTexLayer;
     fColor = vColor;

@@ -79,6 +79,7 @@ public class CUE4ParseViewModel : ViewModel
         set => SetProperty(ref _modelIsWaitingAnimation, value);
     }
 
+    public bool IsSnooperOpen => _snooper is { Exists: true, IsVisible: true };
     private Snooper _snooper;
     public Snooper SnooperViewer
     {
@@ -86,7 +87,8 @@ public class CUE4ParseViewModel : ViewModel
         {
             return Application.Current.Dispatcher.Invoke(delegate
             {
-                return _snooper ??= new Snooper(GameWindowSettings.Default,
+                return _snooper ??= new Snooper(
+                    new GameWindowSettings { RenderFrequency = 240 },
                     new NativeWindowSettings
                     {
                         Size = new OpenTK.Mathematics.Vector2i(
@@ -145,7 +147,8 @@ public class CUE4ParseViewModel : ViewModel
                 Game = Helper.IAmThePanda(parent) ? FGame.PandaGame : parent.ToEnum(FGame.Unknown);
                 var versions = new VersionContainer(UserSettings.Default.OverridedGame[Game], UserSettings.Default.OverridedPlatform,
                     customVersions: UserSettings.Default.OverridedCustomVersions[Game],
-                    optionOverrides: UserSettings.Default.OverridedOptions[Game]);
+                    optionOverrides: UserSettings.Default.OverridedOptions[Game],
+                    mapStructTypesOverrides: UserSettings.Default.OverridedMapStructTypes[Game]);
 
                 switch (Game)
                 {
@@ -177,7 +180,8 @@ public class CUE4ParseViewModel : ViewModel
                     {
                         versions = new VersionContainer(settings.OverridedGame, UserSettings.Default.OverridedPlatform,
                             customVersions: settings.OverridedCustomVersions,
-                            optionOverrides: settings.OverridedOptions);
+                            optionOverrides: settings.OverridedOptions,
+                            mapStructTypesOverrides: settings.OverridedMapStructTypes);
                         goto default;
                     }
                     default:
@@ -523,7 +527,15 @@ public class CUE4ParseViewModel : ViewModel
     }
 
     public void ExportFolder(CancellationToken cancellationToken, TreeItem folder)
-        => BulkFolder(cancellationToken, folder, asset => ExportData(asset.FullPath));
+    {
+        Parallel.ForEach(folder.AssetsList.Assets, asset =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ExportData(asset.FullPath, false);
+        });
+
+        foreach (var f in folder.Folders) ExportFolder(cancellationToken, f);
+    }
 
     public void ExtractFolder(CancellationToken cancellationToken, TreeItem folder)
         => BulkFolder(cancellationToken, folder, asset => Extract(cancellationToken, asset.FullPath, TabControl.HasNoTabs));
@@ -586,6 +598,8 @@ public class CUE4ParseViewModel : ViewModel
             case "manifest":
             case "uplugin":
             case "archive":
+            case "vmodule":
+            case "verse":
             case "html":
             case "json":
             case "ini":
@@ -763,8 +777,8 @@ public class CUE4ParseViewModel : ViewModel
             {
                 if (!TabControl.CanAddTabs) return false;
 
-                TabControl.AddTab($"{solarisDigest.ProjectName}.ulang");
-                TabControl.SelectedTab.Highlighter = AvalonExtensions.HighlighterSelector("ulang");
+                TabControl.AddTab($"{solarisDigest.ProjectName}.verse");
+                TabControl.SelectedTab.Highlighter = AvalonExtensions.HighlighterSelector("verse");
                 TabControl.SelectedTab.SetDocumentText(solarisDigest.ReadableCode, false);
                 return true;
             }
@@ -889,7 +903,8 @@ public class CUE4ParseViewModel : ViewModel
         {
             Log.Information("Successfully saved {FilePath}", savedFilePath);
             FLogger.AppendInformation();
-            FLogger.AppendText($"Successfully saved {label}", Constants.WHITE, true);
+            FLogger.AppendText("Successfully saved ", Constants.WHITE);
+            FLogger.AppendLink(label, savedFilePath, true);
         }
         else
         {
@@ -899,23 +914,32 @@ public class CUE4ParseViewModel : ViewModel
         }
     }
 
-    public void ExportData(string fullPath)
+    private readonly object _rawData = new ();
+    public void ExportData(string fullPath, bool updateUi = true)
     {
         var fileName = fullPath.SubstringAfterLast('/');
         if (Provider.TrySavePackage(fullPath, out var assets))
         {
-            foreach (var kvp in assets)
+            string path = UserSettings.Default.RawDataDirectory;
+            Parallel.ForEach(assets, kvp =>
             {
-                var path = Path.Combine(UserSettings.Default.RawDataDirectory, UserSettings.Default.KeepDirectoryStructure ? kvp.Key : kvp.Key.SubstringAfterLast('/')).Replace('\\', '/');
-                Directory.CreateDirectory(path.SubstringBeforeLast('/'));
-                File.WriteAllBytes(path, kvp.Value);
-            }
+                lock (_rawData)
+                {
+                    path = Path.Combine(UserSettings.Default.RawDataDirectory, UserSettings.Default.KeepDirectoryStructure ? kvp.Key : kvp.Key.SubstringAfterLast('/')).Replace('\\', '/');
+                    Directory.CreateDirectory(path.SubstringBeforeLast('/'));
+                    File.WriteAllBytes(path, kvp.Value);
+                }
+            });
 
-            Log.Information("{FileName} successfully exported", fileName);
-            FLogger.AppendInformation();
-            FLogger.AppendText($"Successfully exported '{fileName}'", Constants.WHITE, true);
+            if (updateUi)
+            {
+                Log.Information("{FileName} successfully exported", fileName);
+                FLogger.AppendInformation();
+                FLogger.AppendText("Successfully exported ", Constants.WHITE);
+                FLogger.AppendLink(fileName, path, true);
+            }
         }
-        else
+        else if (updateUi)
         {
             Log.Error("{FileName} could not be exported", fileName);
             FLogger.AppendError();

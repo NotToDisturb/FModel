@@ -1,6 +1,5 @@
 using System;
 using System.ComponentModel;
-using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -19,19 +18,15 @@ namespace FModel.Views.Snooper;
 
 public class Snooper : GameWindow
 {
-    public Camera Camera;
     public readonly FramebufferObject Framebuffer;
     public readonly Renderer Renderer;
 
     private readonly SnimGui _gui;
 
-    private float _previousSpeed;
-
     private bool _init;
 
     public Snooper(GameWindowSettings gwSettings, NativeWindowSettings nwSettings) : base(gwSettings, nwSettings)
     {
-        Camera = new Camera();
         Framebuffer = new FramebufferObject(ClientSize);
         Renderer = new Renderer(ClientSize.X, ClientSize.Y);
 
@@ -41,13 +36,7 @@ public class Snooper : GameWindow
 
     public bool TryLoadExport(CancellationToken cancellationToken, UObject export)
     {
-        var newCamera = Renderer.Load(cancellationToken, export) ?? new Camera();
-        if (newCamera.Speed > _previousSpeed)
-        {
-            newCamera.Zoom = Camera.Zoom;
-            Camera = newCamera;
-            _previousSpeed = Camera.Speed;
-        }
+        Renderer.Load(cancellationToken, export);
         return Renderer.Options.Models.Count > 0;
     }
 
@@ -55,7 +44,7 @@ public class Snooper : GameWindow
     {
         if (clear)
         {
-            _previousSpeed = 0f;
+            Renderer.CameraOp.Speed = 0;
             Renderer.Options.ResetModelsAndLights();
             Renderer.Options.SelectModel(Guid.Empty);
             Renderer.Save();
@@ -82,7 +71,7 @@ public class Snooper : GameWindow
 
     private unsafe void LoadWindowIcon()
     {
-        var info = Application.GetResourceStream(new Uri($"/FModel;component/Resources/engine.png", UriKind.Relative));
+        var info = Application.GetResourceStream(new Uri("/FModel;component/Resources/engine.png", UriKind.Relative));
         using var img = SixLabors.ImageSharp.Image.Load<Rgba32>(info.Stream);
         var memoryGroup = img.GetPixelMemoryGroup();
         Memory<byte> array = new byte[memoryGroup.TotalLength * sizeof(Rgba32)];
@@ -110,6 +99,7 @@ public class Snooper : GameWindow
 
         GL.ClearColor(OpenTK.Mathematics.Color4.Black);
         GL.Enable(EnableCap.Blend);
+        GL.Enable(EnableCap.CullFace);
         GL.Enable(EnableCap.DepthTest);
         GL.Enable(EnableCap.Multisample);
         GL.StencilOp(StencilOp.Keep, StencilOp.Replace, StencilOp.Replace);
@@ -133,7 +123,7 @@ public class Snooper : GameWindow
         Framebuffer.Bind(); // switch to viewport background
         ClearWhatHasBeenDrawn(); // clear viewport background
 
-        Renderer.Render(Camera);
+        Renderer.Render();
 
         Framebuffer.BindMsaa();
         Framebuffer.Bind(0); // switch to window background
@@ -162,24 +152,7 @@ public class Snooper : GameWindow
         if (!IsVisible || ImGui.GetIO().WantTextInput)
             return;
 
-        var multiplier = KeyboardState.IsKeyDown(Keys.LeftShift) ? 2f : 1f;
-        var moveSpeed = Camera.Speed * multiplier * (float) e.Time;
-        if (KeyboardState.IsKeyDown(Keys.W))
-            Camera.Position += moveSpeed * Camera.Direction;
-        if (KeyboardState.IsKeyDown(Keys.S))
-            Camera.Position -= moveSpeed * Camera.Direction;
-        if (KeyboardState.IsKeyDown(Keys.A))
-            Camera.Position -= Vector3.Normalize(Vector3.Cross(Camera.Direction, Camera.Up)) * moveSpeed;
-        if (KeyboardState.IsKeyDown(Keys.D))
-            Camera.Position += Vector3.Normalize(Vector3.Cross(Camera.Direction, Camera.Up)) * moveSpeed;
-        if (KeyboardState.IsKeyDown(Keys.E))
-            Camera.Position += moveSpeed * Camera.Up;
-        if (KeyboardState.IsKeyDown(Keys.Q))
-            Camera.Position -= moveSpeed * Camera.Up;
-        if (KeyboardState.IsKeyDown(Keys.X))
-            Camera.ModifyZoom(-.5f);
-        if (KeyboardState.IsKeyDown(Keys.C))
-            Camera.ModifyZoom(+.5f);
+        Renderer.CameraOp.Modify(KeyboardState, (float) e.Time);
 
         if (KeyboardState.IsKeyPressed(Keys.H))
             WindowShouldClose(true, false);
@@ -193,9 +166,8 @@ public class Snooper : GameWindow
 
         GL.Viewport(0, 0, e.Width, e.Height);
 
-        Camera.AspectRatio = e.Width / (float) e.Height;
         Framebuffer.WindowResized(e.Width, e.Height);
-        Renderer.Picking.WindowResized(e.Width, e.Height);
+        Renderer.WindowResized(e.Width, e.Height);
 
         _gui.Controller.WindowResized(e.Width, e.Height);
     }

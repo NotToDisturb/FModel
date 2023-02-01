@@ -12,6 +12,7 @@ using CUE4Parse.UE4.Assets.Exports.Material;
 using FModel.Framework;
 using FModel.ViewModels;
 using FModel.ViewModels.ApiEndpoints.Models;
+using FModel.Views.Snooper;
 using Newtonsoft.Json;
 
 namespace FModel.Settings
@@ -360,10 +361,42 @@ namespace FModel.Settings
             {FGame.Hotta, null},
             {FGame.eFootball, null}
         };
+
+        private IDictionary<FGame, Dictionary<string, KeyValuePair<string, string>>> _overridedMapStructTypes = new Dictionary<FGame, Dictionary<string, KeyValuePair<string, string>>>
+        {
+            {FGame.Unknown, null},
+            {FGame.FortniteGame, null},
+            {FGame.ShooterGame, null},
+            {FGame.DeadByDaylight, null},
+            {FGame.OakGame, null},
+            {FGame.Dungeons, null},
+            {FGame.WorldExplorers, null},
+            {FGame.g3, null},
+            {FGame.StateOfDecay2, null},
+            {FGame.Prospect, null},
+            {FGame.Indiana, null},
+            {FGame.RogueCompany, null},
+            {FGame.SwGame, null},
+            {FGame.Platform, null},
+            {FGame.BendGame, null},
+            {FGame.TslGame, null},
+            {FGame.PortalWars, null},
+            {FGame.Gameface, null},
+            {FGame.Athena, null},
+            {FGame.PandaGame, null},
+            {FGame.Hotta, null},
+            {FGame.eFootball, null}
+        };
         public IDictionary<FGame, Dictionary<string, bool>> OverridedOptions
         {
             get => _overridedOptions;
             set => SetProperty(ref _overridedOptions, value);
+        }
+
+        public IDictionary<FGame, Dictionary<string, KeyValuePair<string, string>>> OverridedMapStructTypes
+        {
+            get => _overridedMapStructTypes;
+            set => SetProperty(ref _overridedMapStructTypes, value);
         }
 
         private IDictionary<FGame, FEndpoint[]> _customEndpoints = new Dictionary<FGame, FEndpoint[]>
@@ -372,8 +405,8 @@ namespace FModel.Settings
             {
                 FGame.FortniteGame, new []
                 {
-                    new FEndpoint("https://fortnitecentral.gmatrixgames.ga/api/v1/aes", "$.['mainKey','dynamicKeys']"),
-                    new FEndpoint("https://fortnitecentral.gmatrixgames.ga/api/v1/mappings", "$.[?(@.meta.compressionMethod=='Oodle')].['url','fileName']") //  && @.meta.platform=='Windows'
+                    new FEndpoint("https://fortnitecentral.genxgames.gg/api/v1/aes", "$.['mainKey','dynamicKeys']"),
+                    new FEndpoint("https://fortnitecentral.genxgames.gg/api/v1/mappings", "$.[?(@.meta.compressionMethod=='Oodle')].['url','fileName']") //  && @.meta.platform=='Windows'
                 }
             },
             {FGame.ShooterGame, new FEndpoint[]{new (), new ()}},
@@ -612,6 +645,13 @@ namespace FModel.Settings
         {
             get => _showGrid;
             set => SetProperty(ref _showGrid, value);
+        }
+
+        private Camera.WorldMode _cameraMode = Camera.WorldMode.Arcball;
+        public Camera.WorldMode CameraMode
+        {
+            get => _cameraMode;
+            set => SetProperty(ref _cameraMode, value);
         }
 
         private bool _previewStaticMeshes = true;

@@ -1,64 +1,54 @@
 ﻿using System;
-using System.Numerics;
 using CUE4Parse_Conversion.Animations;
-using CUE4Parse.UE4.Objects.Core.Math;
 
 namespace FModel.Views.Snooper.Models.Animations;
 
 public class Animation : IDisposable
 {
-    public float CurrentTime;
-    public float DeltaTime;
-    public CAnimSet CurrentAnimation;
-    public Matrix4x4[] FinalBonesMatrix;
+    public int CurrentTime;
+    public readonly int MaxTime;
+    public readonly Transform[][] BoneTransforms;
 
-    public Animation(CAnimSet anim)
+    public Animation(Skeleton skeleton, CAnimSet anim)
     {
-        CurrentTime = 0f;
-        CurrentAnimation = anim;
+        CurrentTime = 0;
 
-        FinalBonesMatrix = new Matrix4x4[anim.TrackBoneNames.Length];
-        for (int i = 0; i < FinalBonesMatrix.Length; i++)
+        var sequence = anim.Sequences[0];
+        MaxTime = sequence.NumFrames - 1;
+        BoneTransforms = new Transform[skeleton.BonesTransformByIndex.Count][];
+        for (var boneIndex = 0; boneIndex < BoneTransforms.Length; boneIndex++)
         {
-            FinalBonesMatrix[i] = Matrix4x4.Identity;
-        }
-    }
+            var parentIndex = skeleton.ReferenceSkeleton.FinalRefBoneInfo[boneIndex].ParentIndex;
+            if (!skeleton.BonesTransformByIndex.TryGetValue(boneIndex, out var originalTransform))
+                throw new ArgumentNullException("no transform for bone " + boneIndex);
 
-    public void UpdateAnimation(float deltaTime)
-    {
-        DeltaTime = deltaTime;
-        if (CurrentAnimation != null)
-        {
-            CurrentTime = deltaTime;
-            CalculateBoneTransform();
-        }
-    }
+            var boneOrientation = originalTransform.Rotation;
+            var bonePosition = originalTransform.Position;
+            var boneScale = originalTransform.Scale;
 
-    public void CalculateBoneTransform()
-    {
-        var sequence = CurrentAnimation.Sequences[0];
-        for (int boneIndex = 0; boneIndex < FinalBonesMatrix.Length; boneIndex++)
-        {
-            var boneOrientation = FQuat.Identity;
-            var bonePosition = FVector.ZeroVector;
-            sequence.Tracks[boneIndex].GetBonePosition(CurrentTime, sequence.NumFrames, false, ref bonePosition, ref boneOrientation);
-
-            boneOrientation *= CurrentAnimation.BonePositions[boneIndex].Orientation;
-            bonePosition = boneOrientation.RotateVector(bonePosition);
-            bonePosition *= Constants.SCALE_DOWN_RATIO;
-            if (CurrentAnimation.TrackBoneNames[boneIndex].Text == "pelvis")
+            BoneTransforms[boneIndex] = new Transform[sequence.NumFrames];
+            for (var frame = 0; frame < BoneTransforms[boneIndex].Length; frame++)
             {
+                sequence.Tracks[boneIndex].GetBonePosition(frame, sequence.NumFrames, false, ref bonePosition, ref boneOrientation);
+                if (CurrentTime < sequence.Tracks[boneIndex].KeyScale.Length)
+                    boneScale = sequence.Tracks[boneIndex].KeyScale[CurrentTime];
 
+                boneOrientation.W *= -1;
+                bonePosition *= Constants.SCALE_DOWN_RATIO;
+
+                BoneTransforms[boneIndex][frame] = new Transform
+                {
+                    Relation = parentIndex >= 0 ? BoneTransforms[parentIndex][frame].Matrix : originalTransform.Relation,
+                    Rotation = boneOrientation,
+                    Position = bonePosition,
+                    Scale = boneScale
+                };
             }
-
-            FinalBonesMatrix[boneIndex] =
-                Matrix4x4.CreateFromQuaternion(boneOrientation) *
-                Matrix4x4.CreateTranslation(bonePosition.ToMapVector());
         }
     }
 
     public void Dispose()
     {
-        throw new NotImplementedException();
+
     }
 }

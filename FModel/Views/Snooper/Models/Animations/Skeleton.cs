@@ -1,9 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Numerics;
+using CUE4Parse_Conversion.Animations;
 using CUE4Parse.UE4.Assets.Exports.Animation;
-using CUE4Parse.UE4.Assets.Exports.SkeletalMesh;
-using CUE4Parse.UE4.Objects.Core.Math;
 using CUE4Parse.UE4.Objects.UObject;
 using FModel.Views.Snooper.Shading;
 
@@ -11,77 +10,82 @@ namespace FModel.Views.Snooper.Models.Animations;
 
 public class Skeleton : IDisposable
 {
-    public readonly USkeleton RefSkel;
+    public readonly USkeleton UnrealSkeleton;
+    public readonly FReferenceSkeleton ReferenceSkeleton;
+    public readonly Dictionary<string, int> BonesIndexByName;
+    public readonly Dictionary<int, Transform> BonesTransformByIndex;
     public readonly bool IsLoaded;
-    public readonly Socket[] Sockets;
 
     public Animation Anim;
 
-    public Skeleton(FPackageIndex package)
+    public Skeleton()
     {
-        RefSkel = package.Load<USkeleton>();
-        if (RefSkel == null) return;
+        BonesIndexByName = new Dictionary<string, int>();
+        BonesTransformByIndex = new Dictionary<int, Transform>();
+    }
 
-        IsLoaded = true;
-        Sockets = new Socket[RefSkel.Sockets.Length];
-        for (int i = 0; i < Sockets.Length; i++)
+    public Skeleton(FPackageIndex package, FReferenceSkeleton referenceSkeleton, Transform transform) : this()
+    {
+        UnrealSkeleton = package.Load<USkeleton>();
+        IsLoaded = UnrealSkeleton != null;
+        if (!IsLoaded) return;
+
+        ReferenceSkeleton = UnrealSkeleton.ReferenceSkeleton;
+        foreach ((var name, var boneIndex) in ReferenceSkeleton.FinalNameToIndexMap)
         {
-            if (RefSkel.Sockets[i].Load<USkeletalMeshSocket>() is not { } socket ||
-                !RefSkel.ReferenceSkeleton.FinalNameToIndexMap.TryGetValue(socket.BoneName.Text, out var boneIndex))
+            if (!referenceSkeleton.FinalNameToIndexMap.TryGetValue(name, out var newBoneIndex))
                 continue;
 
-            var transform = Transform.Identity;
-            var matrix = Matrix4x4.Identity;
-            while (boneIndex > -1)
+            ReferenceSkeleton.FinalRefBonePose[boneIndex] = referenceSkeleton.FinalRefBonePose[newBoneIndex];
+        }
+        BonesIndexByName = ReferenceSkeleton.FinalNameToIndexMap;
+        UpdateBoneMatrices(transform.Matrix);
+    }
+
+    public void SetAnimation(CAnimSet anim)
+    {
+        Anim = new Animation(this, anim);
+    }
+
+    public void UpdateBoneMatrices(Matrix4x4 matrix)
+    {
+        if (!IsLoaded) return;
+        foreach (var boneIndex in BonesIndexByName.Values)
+        {
+            var bone = ReferenceSkeleton.FinalRefBonePose[boneIndex];
+            var parentIndex = ReferenceSkeleton.FinalRefBoneInfo[boneIndex].ParentIndex;
+
+            if (!BonesTransformByIndex.TryGetValue(boneIndex, out var boneTransform))
             {
-                var bone = RefSkel.ReferenceSkeleton.FinalRefBonePose[boneIndex];
-                boneIndex = RefSkel.ReferenceSkeleton.FinalRefBoneInfo[boneIndex].ParentIndex;
-                var parentBone = RefSkel.ReferenceSkeleton.FinalRefBonePose[boneIndex < 0 ? 0 : boneIndex];
-
-                var orig_loc = bone.Translation;
-                parentBone.Rotation.Conjugate();
-                orig_loc = parentBone.Rotation.RotateVector(orig_loc);
-
-                var orig_quat = bone.Rotation;
-                orig_quat *= parentBone.Rotation;
-                orig_quat.Conjugate();
-
-                var p_rotated = orig_quat * orig_loc;
-                orig_quat.Conjugate();
-                p_rotated *= orig_quat;
-
-                matrix *=
-                    Matrix4x4.CreateFromQuaternion(orig_quat) *
-                    Matrix4x4.CreateTranslation(p_rotated);
-
-                // Console.WriteLine(matrix.Translation);
+                boneTransform = new Transform
+                {
+                    Rotation = bone.Rotation,
+                    Position = bone.Translation * Constants.SCALE_DOWN_RATIO,
+                    Scale = bone.Scale3D
+                };
             }
-            // for (int j = 0; j <= boneIndex; j++)
-            // {
-            //     var t = RefSkel.ReferenceSkeleton.FinalRefBonePose[j];
-            //     var r = RefSkel.ReferenceSkeleton.FinalRefBonePose[j - (j == 0 ? 0 : 1)].Rotation;
-            //     r.Conjugate();
-            //     matrix *= Matrix4x4.CreateFromQuaternion(r) * Matrix4x4.CreateTranslation(t.Translation);
-            //
-            //     Console.WriteLine($@"{t.Translation}");
-            //     transform.Relation *= matrix;
-            // }
 
-            Sockets[i] = new Socket(socket, matrix.Translation);
+            if (!BonesTransformByIndex.TryGetValue(parentIndex, out var parentTransform))
+                parentTransform = new Transform { Relation = matrix };
+
+            boneTransform.Relation = parentTransform.Matrix;
+            BonesTransformByIndex[boneIndex] = boneTransform;
         }
     }
 
     public void SetUniform(Shader shader)
     {
-        if (!IsLoaded) return;
-        for (var i = 0; i < Anim?.FinalBonesMatrix.Length; i++)
+        if (!IsLoaded || Anim == null) return;
+        for (int boneIndex = 0; boneIndex < Anim.BoneTransforms.Length; boneIndex++)
         {
-            shader.SetUniform($"uFinalBonesMatrix[{i}]", Anim.FinalBonesMatrix[i]);
+            shader.SetUniform($"uFinalBonesMatrix[{boneIndex}]", Anim.BoneTransforms[boneIndex][Anim.CurrentTime].Matrix);
         }
     }
 
     public void Dispose()
     {
-        throw new NotImplementedException();
+        BonesIndexByName.Clear();
+        BonesTransformByIndex.Clear();
+        Anim?.Dispose();
     }
 }
