@@ -58,7 +58,7 @@ public enum FGame
     Unknown,
     [Description("Fortnite")]
     FortniteGame,
-    [Description("Valorant")]
+    [Description("VALORANT")]
     ShooterGame,
     [Description("Dead By Daylight")]
     DeadByDaylight,
