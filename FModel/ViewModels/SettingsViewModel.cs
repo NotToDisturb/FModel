@@ -316,9 +316,14 @@ public class SettingsViewModel : ViewModel
 
     private IEnumerable<EGame> EnumerateUeGames()
         => Enum.GetValues<EGame>()
-            .GroupBy(value => (int)value)
+            .GroupBy(value => (int) value)
             .Select(group => group.First())
-            .OrderBy(value => (int)value == ((int)value & ~0xF));
+            .OrderBy(value =>
+            {
+                int BaseUnrealEngineVersion = (int) value == ((int) value & ~0xF) ? 1 : 0;
+                int ValorantGame = value.ToString().Contains("GAME_Valorant_") ? 2 : 0;
+                return BaseUnrealEngineVersion + ValorantGame;
+            });
     private IEnumerable<ELanguage> EnumerateAssetLanguages() => Enum.GetValues<ELanguage>();
     private IEnumerable<EAesReload> EnumerateAesReloads() => Enum.GetValues<EAesReload>();
     private IEnumerable<EDiscordRpc> EnumerateDiscordRpcs() => Enum.GetValues<EDiscordRpc>();

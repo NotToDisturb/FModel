@@ -13,6 +13,7 @@ using CUE4Parse.UE4.Versions;
 using FModel.Settings;
 using FModel.ViewModels.ApiEndpoints.Models;
 using Microsoft.Win32;
+using FModel.Views.Resources.Controls;
 
 namespace FModel.ViewModels;
 
@@ -84,7 +85,12 @@ public class GameSelectorViewModel : ViewModel
         => Enum.GetValues<EGame>()
             .GroupBy(value => (int)value)
             .Select(group => group.First())
-            .OrderBy(value => (int)value == ((int)value & ~0xF));
+            .OrderBy(value =>
+            {
+                int BaseUnrealEngineVersion = (int) value == ((int) value & ~0xF) ? 1 : 0;
+                int ValorantGame = value.ToString().Contains("GAME_Valorant") ? 0 : 2;
+                return BaseUnrealEngineVersion + ValorantGame;
+            });
     private IEnumerable<DirectorySettings> EnumerateDetectedGames()
     {
         yield return GetUnrealEngineGame("Fortnite", "\\FortniteGame\\Content\\Paks", EGame.GAME_UE5_6);
